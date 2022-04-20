@@ -1,0 +1,197 @@
+---
+title: "PSTAT 131 HW 3"
+author: "Jay Shreedhar"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE}
+library(tidymodels)
+library(tidyverse)
+library(dplyr)
+library(corrplot)
+library(ggplot2)
+library(RColorBrewer)
+library(ISLR)
+library(ISLR2)
+library(discrim)
+library(poissonreg)
+library(corrr)
+library(klaR)
+library(pROC)
+library(ggcorrplot)
+tidymodels_prefer()
+set.seed(3945)
+```
+
+```{r}
+titanic <- read.csv(file='data/titanic.csv')
+titanic$survived <- factor(titanic$survived, levels=c("Yes", "No"))
+titanic$pclass <- factor(titanic$pclass)
+```
+
+**Question 1:**<br />
+```{r}
+
+titanic_split <- initial_split(titanic, prop=0.8, strata=survived)
+titanic_train <- training(titanic_split)
+titanic_test <- testing(titanic_split)
+```
+<br />
+Yes, the datasets have the right number of observations. There are a lot of missing cabin numbers and a few missing ages. Stratifying by `survived` ensures that we are not creating datasets that are biased toward or against passengers who survived.
+<br /><br />
+**Question 2:**<br />
+```{r}
+
+titanic_train %>%
+  ggplot(aes(x=survived)) +
+  geom_bar()
+
+```
+Around 200 more people, or roughly 1.8 times as many, died in comparison to those who survived.<br /><br />
+**Question 3:**<br />
+```{r}
+dat <- titanic_train %>%
+          select(where(is.numeric)) %>%
+  correlate()
+rplot(dat)
+
+```
+<br />
+It seems that `parch` and `sib_sp` are positively correlated, and `age` and `sib_sp` are negatively correlated. There are also faint positive correlations between `fare` and `parch`, `sib_sp`, and `age`, and a faint negative correlation between `parch` and `age.`<br /><br />
+**Question 4:**<br />
+```{r}
+
+titanic_recipe <- 
+  recipe(survived ~ pclass + sex + age + sib_sp + parch + fare, data=titanic_train) %>% step_impute_linear(age) %>%
+  step_dummy(all_nominal_predictors()) %>% 
+  step_interact(terms = ~ starts_with("sex"):fare) %>%
+  step_interact(terms = ~ age:fare)
+
+```
+<br /><br />
+**Question 5:**
+```{r}
+
+log_reg <- logistic_reg() %>% 
+  set_engine("glm") %>% 
+  set_mode("classification")
+
+log_wkflow <- workflow() %>% 
+  add_model(log_reg) %>% 
+  add_recipe(titanic_recipe)
+
+log_fit <- fit(log_wkflow, titanic_train)
+
+```
+<br /><br />
+**Question 6:**
+```{r}
+
+lindisc <- discrim_linear() %>% 
+  set_engine("MASS") %>% 
+  set_mode("classification")
+
+lin_wkflow <- workflow() %>% 
+  add_model(lindisc) %>% 
+  add_recipe(titanic_recipe)
+
+lin_fit <- fit(lin_wkflow, titanic_train)
+
+```
+<br /><br />
+**Question 7:**
+```{r}
+
+quadisc <- discrim_quad() %>% 
+  set_engine("MASS") %>% 
+  set_mode("classification")
+
+quad_wkflow <- workflow() %>% 
+  add_model(quadisc) %>% 
+  add_recipe(titanic_recipe)
+
+quad_fit <- fit(quad_wkflow, titanic_train)
+
+```
+<br /><br />
+**Question 8:**
+```{r}
+
+nbmod <- naive_Bayes() %>% 
+  set_engine("klaR") %>% 
+  set_mode("classification") %>%
+  set_args(usekernel=FALSE)
+
+nb_wkflow <- workflow() %>% 
+  add_model(nbmod) %>% 
+  add_recipe(titanic_recipe)
+
+nb_fit <- fit(nb_wkflow, titanic_train)
+
+```
+<br /><br />
+**Question 9:**
+```{r, warning=FALSE}
+
+logisticmod <- predict(log_fit, new_data = titanic_train, type = "prob")
+logisticcol <- bind_cols(logisticmod, titanic_train)
+logisticacc <- augment(log_fit, new_data = titanic_train) %>%
+  accuracy(truth = survived, estimate = .pred_class)
+lineardiscrimmod <- predict(lin_fit, new_data = titanic_train, type = "prob")
+lindisccol <- bind_cols(lineardiscrimmod, titanic_train)
+linacc <- augment(lin_fit, new_data = titanic_train) %>%
+  accuracy(truth = survived, estimate = .pred_class)
+quaddiscrimmod <- predict(quad_fit, new_data = titanic_train, type = "prob")
+quadisccol <- bind_cols(quaddiscrimmod, titanic_train)
+quadacc <- augment(quad_fit, new_data = titanic_train) %>%
+  accuracy(truth = survived, estimate = .pred_class)
+naivebayesmod <- predict(nb_fit, new_data = titanic_train, type = "prob")
+nbcol <- bind_cols(naivebayesmod, titanic_train)
+bayesacc <- augment(nb_fit, new_data = titanic_train) %>%
+  accuracy(truth = survived, estimate = .pred_class)
+
+accuracies <- c(logisticacc$.estimate, linacc$.estimate, 
+                quadacc$.estimate, bayesacc$.estimate)
+models <- c("Logistic Regression", "Linear Discriminant", "Naive Bayes", "Quadratic Discriminant")
+results <- tibble(accuracies = accuracies, models = models)
+results %>% 
+  arrange(-accuracies)
+```
+<br />Logistic regression achieved the highest accuracy of 0.8160112.<br /><br />
+**Question 10:**
+Accuracy:<br />
+```{r}
+
+testfit <- predict(log_fit, new_data = titanic_test, type = "prob")
+augment(log_fit, new_data = titanic_test) %>%
+  accuracy(truth = survived, estimate = .pred_class)
+
+```
+<br />
+Confusion matrix:<br />
+```{r}
+
+augment(log_fit, new_data = titanic_test) %>%
+  conf_mat(truth = survived, estimate = .pred_class) 
+
+```
+<br />
+ROC curve:<br />
+```{r}
+
+augment(log_fit, new_data = titanic_test) %>%
+  roc_curve(survived, .pred_Yes) %>%
+  autoplot()
+
+augment(log_fit, new_data = titanic_test) %>%
+  roc_auc(survived, .pred_Yes) 
+```
+<br />The AUC is estimated to be 0.8421607.<br />
+<br />The accuracy for the testing data was 0.7988827, so pretty close to what it was for the training data. However, it is still lower. This is probably due to slight overfitting.<br />
